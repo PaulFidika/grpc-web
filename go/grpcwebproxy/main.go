@@ -28,6 +28,8 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/grpclog"
 	"google.golang.org/grpc/metadata"
+	"golang.org/x/net/http2"
+	"golang.org/x/net/http2/h2c"
 )
 
 var (
@@ -170,13 +172,21 @@ func main() {
 			})
 		}
 
-		debugServer := buildServer(wrappedGrpc, serveMux)
-		debugListener := buildListenerOrFail("http", *flagHttpPort)
-		serveServer(debugServer, debugListener, "http", errChan)
+		// Wrap the ServeMux with h2c to allow serving gRPC over HTTP/2 Cleartext
+		h2cHandler := h2c.NewHandler(serveMux, &http2.Server{})
+
+		// Create an HTTP server with the h2c handler
+		httpServer := buildServer(h2cHandler)
+
+		// Listen on the specified port
+		listener := buildListenerOrFail("http", *flagHttpPort)
+
+		// Serve gRPC over h2c and the debug endpoints
+		serveServer(httpServer, listener, "http", errChan)
 	}
 
 	if *runTlsServer {
-		servingServer := buildServer(wrappedGrpc, serveMux)
+		servingServer := buildServer(serveMux)
 		servingListener := buildListenerOrFail("http", *flagHttpTlsPort)
 		servingListener = tls.NewListener(servingListener, buildServerTlsOrFail())
 		serveServer(servingServer, servingListener, "http_tls", errChan)
@@ -186,12 +196,12 @@ func main() {
 	// TODO(mwitkow): Add graceful shutdown.
 }
 
-func buildServer(wrappedGrpc *grpcweb.WrappedGrpcServer, handler http.Handler) *http.Server {
-	return &http.Server{
-		WriteTimeout: *flagHttpMaxWriteTimeout,
-		ReadTimeout:  *flagHttpMaxReadTimeout,
-		Handler:      handler,
-	}
+func buildServer(handler http.Handler) *http.Server {
+    return &http.Server{
+        WriteTimeout: *flagHttpMaxWriteTimeout,
+        ReadTimeout:  *flagHttpMaxReadTimeout,
+        Handler:      handler,
+    }
 }
 
 func serveServer(server *http.Server, listener net.Listener, name string, errChan chan error) {
